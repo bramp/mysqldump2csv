@@ -48,7 +48,7 @@ After writing this I found a almost identical application, [mysqldump-to-csv](ht
 
 TODO
 ----
-[ ] Convince https://github.com/xwb1989/sqlparser/issues/11 to update to the latest parser supplied by youtube/vitess. This will fix a bug parsing the `CREATE TABLE` statement.
-[ ] Parse the `CREATE TABLE` line, and output a header line with the column names.
-[ ] Add better support for dumps with multiple tables.
-[ ] Change the output CSV to always quote strings, and never quote numbers and NULL. 
+- [x] Convince https://github.com/xwb1989/sqlparser/issues/11 to update to the latest parser supplied by youtube/vitess. This will fix a bug parsing the `CREATE TABLE` statement.
+- [ ] Parse the `CREATE TABLE` line, and output a header line with the column names.
+- [ ] Add better support for dumps with multiple tables.
+- [ ] Change the output CSV to always quote strings, and never quote numbers and NULL. 
