@@ -5,7 +5,6 @@ package main
 
 import (
 	"bufio"
-	"encoding/csv"
 	"errors"
 	"flag"
 	"fmt"
@@ -14,19 +13,89 @@ import (
 	"io"
 	"log"
 	"os"
+	"reflect"
 	"strings"
-	"unicode/utf8"
 )
 
 var (
-	comma     rune // The actual delimiter rune
 	delimiter = flag.String("delimiter", ",", "field delimiter")
-	//header    = flag.Bool("header", true, "print the CSV header")
+	newline   = flag.String("newline", "\n", "line terminator")
+
+	verbose     = flag.Bool("verbose", false, "verbose output")
+	header      = flag.Bool("header", true, "print the CSV header")
+	tableFilter = flag.String("table", "", "filter the results to only this table")
+	multi       = flag.Bool("multi", false, "a csv file is created for each table")
+	input       string
 )
 
+/*
 // rowWriter is a simple interface for writing a row of results
 type rowWriter interface {
 	Write(record []string) error
+}
+*/
+
+// eofReader wraps a Reader but keeps track of when EOF happens.
+type eofReader struct {
+	io.Reader
+	Eof bool
+}
+
+func (r *eofReader) Read(p []byte) (int, error) {
+	n, err := r.Reader.Read(p)
+	if err == io.EOF {
+		r.Eof = true
+	}
+	return n, err
+}
+
+type Table struct {
+	name          string
+	columns       []*sqlparser.ColumnDefinition
+	out           io.Writer
+	csv           *SqlCsvWriter
+	printedHeader bool
+	count         int
+}
+
+func (t *Table) Close() error {
+	if t.csv == nil {
+		return nil
+	}
+
+	t.csv.Flush()
+	if err := t.csv.Error(); err != nil {
+		return err
+	}
+
+	if out, ok := t.out.(io.Closer); ok {
+		if err := out.Close(); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// MultiSQLTokenizer is a wrapper around sqlparser.Tokenizer but replaces ';' as a io.EOF,
+// so that multiple SQL statements can be read from a single io.Reader.
+type MultiSQLTokenizer struct {
+	sqlparser.Tokenizer
+}
+
+func NewMultiSQLTokenizer(r io.Reader) *MultiSQLTokenizer {
+	return &MultiSQLTokenizer{
+		sqlparser.Tokenizer{InStream: bufio.NewReader(r)},
+	}
+}
+
+func (tkn *MultiSQLTokenizer) Scan() (int, []byte) {
+	t, v := tkn.Tokenizer.Scan()
+	if t == ';' {
+		return 0, nil
+	}
+	fmt.Printf("%d %q\n", t, v)
+	return t, v
 }
 
 func tokenError(tokens *sqlparser.Tokenizer, expected string, token int, value []byte) error {
@@ -35,139 +104,6 @@ func tokenError(tokens *sqlparser.Tokenizer, expected string, token int, value [
 		value = []byte("EOF")
 	}
 	return fmt.Errorf("pos: %d expected %s found %q", tokens.Position, expected, string(value))
-}
-
-// consumeRow reads a row of VALUES from the Tokenizer. It is expected that the first token is
-// the '(' at the beginning of the row, and the Tokenizer will read and consume the ending ')'.
-func consumeRow(w rowWriter, tokens *sqlparser.Tokenizer) error {
-	token, value := tokens.Scan()
-	switch token {
-	case 0:
-		return io.EOF
-	}
-
-	if token != '(' {
-		return tokenError(tokens, `'('`, token, value)
-	}
-
-	var err error
-	var row []string
-
-	// Read one full row
-	for {
-		token, value = tokens.Scan()
-		if token == ')' {
-			break
-		} else if token == '-' {
-			// The minus sign infront of the number, doesn't get treated as part of the number, so handle this manually.
-			token, value = tokens.Scan()
-			value = []byte("-" + string(value))
-		} else if token == sqlparser.NULL {
-			// TODO Handle this in some special way, so it doesn't look like empty string
-			value = []byte("NULL")
-		}
-
-		row = append(row, string(value))
-
-		token, value = tokens.Scan()
-		if token != ',' {
-			break
-		}
-	}
-
-	if token != ')' {
-		return tokenError(tokens, `')'`, token, value)
-	}
-
-	// Write out the CSV
-	if err := w.Write(row); err != nil {
-		return err
-	}
-
-	return err
-}
-
-// scanUntilValues scans and discards tokens until the "VALUES" keyword is found.
-// Returning the table name, and any error
-func scanUntilValues(tokens *sqlparser.Tokenizer) (string, error) {
-	var prevToken int
-	var prevValue []byte
-
-	for count := 0; count < 10000; count++ {
-		token, value := tokens.Scan()
-		switch token {
-		case 0:
-			return "", io.EOF
-
-		case sqlparser.VALUES:
-			if prevToken != sqlparser.ID {
-				return "", errors.New("found VALUES but it was not preceeded by a table name")
-			}
-			// prevValue should be the table name
-			return string(prevValue), nil
-		}
-		prevToken = token
-		prevValue = value
-	}
-
-	// Give up!
-	return "", errors.New("unable to find 'INSERT INTO ... VALUES'")
-}
-
-func process(w rowWriter, tokens *sqlparser.Tokenizer) error {
-	count := 0
-	currentTable := ""
-
-NextTable:
-	for {
-		table, err := scanUntilValues(tokens)
-		if err == io.EOF {
-			// Allow EOF between tables
-			if currentTable == "" {
-				return fmt.Errorf("found no tables")
-			}
-
-			log.Printf("Read %d rows for %q table", count, currentTable)
-			return nil
-
-		} else if err != nil {
-			return err
-		}
-
-		if table != currentTable {
-			if currentTable != "" {
-				log.Printf("Read %d rows for %q table", count, currentTable)
-				count = 0
-			}
-			// Sometimes there are multiple INSERT statements for the same table
-			currentTable = table
-
-			log.Printf("Processing %q table", table)
-		}
-
-		for {
-			// Consume a single row
-			if err := consumeRow(w, tokens); err != nil {
-				return err
-			}
-
-			count++
-
-			token, value := tokens.Scan()
-			switch token {
-			case ',':
-				// Comma between sets of VALUES.
-				continue
-			case ';':
-				// Scan to see if there is another table
-				continue NextTable
-			default:
-				return tokenError(tokens, `',' or ';'`, token, value)
-			}
-		}
-	}
-
-	panic("Shouldn't get here")
 }
 
 func usage() {
@@ -183,48 +119,230 @@ func parseArgs() {
 		usage()
 		os.Exit(2)
 	}
+	input = flag.Args()[0]
+}
 
-	comma, _ = utf8.DecodeRuneInString(*delimiter)
-	if string(comma) != *delimiter {
-		fmt.Fprintf(os.Stderr, "invalid delimiter must be a single character\n")
-		os.Exit(2)
+func vlog(format string, v ...interface{}) {
+	if *verbose {
+		log.Printf(format, v)
 	}
+}
+
+// tableName returns the full qualified table name.
+func tableName(n sqlparser.TableName) string {
+	if n.Qualifier.String() != "" {
+		return n.Qualifier.String() + "." + n.Name.String()
+	}
+	return n.Name.String()
+}
+
+type mysqldump2csv struct {
+	tables      map[string]*Table
+	singleTable *Table
+}
+
+func NewMysqldump2csv() *mysqldump2csv {
+	return &mysqldump2csv{
+		tables: make(map[string]*Table),
+	}
+}
+
+func (app *mysqldump2csv) writeRow(t *Table, row sqlparser.ValTuple) error {
+	/*
+		fields := make([]string, len(row))
+
+		for i, expr := range row {
+			switch expr := expr.(type) {
+			case *sqlparser.SQLVal:
+				// TODO Do something with expr.Type
+				fields[i] = string(expr.Val)
+
+			case *sqlparser.NullVal:
+				fields[i] = "NULL"
+			default:
+				return fmt.Errorf("values contain unsupported complex expression %q", reflect.TypeOf(expr))
+			}
+		}
+
+		return t.csv.Write(row)
+	*/
+	return t.csv.Write(row)
+}
+
+func (app *mysqldump2csv) writeRows(t *Table, rows sqlparser.Values) error {
+	for _, row := range rows {
+		if err := app.writeRow(t, row); err != nil {
+			return err
+		}
+	}
+	t.count += len(rows)
+	return nil
+}
+
+func (app *mysqldump2csv) create(s *sqlparser.DDL) error {
+	name := tableName(s.NewName)
+	app.tables[name] = &Table{
+		name:    name,
+		columns: s.TableSpec.Columns,
+	}
+
+	return nil
+}
+
+func (app *mysqldump2csv) insert(s *sqlparser.Insert) error {
+	if len(s.Columns) > 0 {
+		return errors.New("Insert statement specifies the columns, that is not currently supported.")
+	}
+
+	name := tableName(s.Table)
+	if *tableFilter != "" && *tableFilter != name {
+		// Ignore this insert
+		return nil
+	}
+
+	// Create state for this table the first time we try and insert to it
+	t, found := app.tables[name]
+	if !found {
+		t = &Table{
+			name: name,
+		}
+		app.tables[name] = t
+	}
+
+	if !*multi {
+		if app.singleTable != nil && app.singleTable != t {
+			return fmt.Errorf("Found INSERT statements for multiple tables %q and %q. Either use --table or --multi.", app.singleTable.name, t.name)
+		}
+		app.singleTable = t
+	}
+
+	// Open the csv on the first attempt to write to it
+	if t.csv == nil {
+		if *multi {
+			filename := t.name + ".csv"
+			log.Printf("Creating %q for table %q", filename, t.name)
+			out, err := os.Create(filename)
+			if err != nil {
+				return fmt.Errorf("Failed to create csv file: %s", err)
+			}
+			t.out = out
+		} else {
+			// TODO Add support for writing a single table to a filename (instead of stdout)
+			t.out = os.Stdout
+		}
+
+		t.csv = NewSqlCsvWriter(t.out)
+		t.csv.Comma = *delimiter
+		t.csv.Newline = *newline
+
+		if *header && !t.printedHeader {
+			t.printedHeader = true
+
+			if len(t.columns) > 0 {
+				if err := t.csv.WriteHeader(t.columns); err != nil {
+					return err
+				}
+			} else {
+				// TODO If the INSERT's s.Columns is specified use that.
+				log.Printf("Table %q columns are unknown so no header printed.", t.name)
+			}
+		}
+	}
+
+	if values, ok := s.Rows.(sqlparser.Values); ok {
+		return app.writeRows(t, values)
+	}
+
+	return fmt.Errorf("Unsupported INSERT statement for table %q: %s", t.name, reflect.TypeOf(s.Rows))
+}
+
+func (app *mysqldump2csv) Process(in io.Reader) error {
+	// We have to do this hack with the eofReader, because the sqlparser does
+	// not seem to handle the EOF correctly in all cases.
+	r := &eofReader{Reader: in}
+	buf := bufio.NewReader(r)
+
+	for !r.Eof {
+		tokens := &sqlparser.Tokenizer{
+			InStream:      buf,
+			AllowComments: true,
+		}
+
+		// Keep parsing from the stream, allowing us to read multiple statements.
+		s, err := sqlparser.ParseFromTokenizer(tokens)
+		if err != nil {
+			// The sqlparser is unable to parse empty statements, for example `/*comment*/;`. This returns
+			// a syntax error, so we just ignore all errors and kept going.
+			// TODO Patch the upstream parser to allow empty statements.
+			vlog("Error parsing sql: %s", err)
+		}
+
+		if s != nil {
+			switch s := s.(type) {
+			case *sqlparser.Insert:
+				if err := app.insert(s); err != nil {
+					return err
+				}
+
+			case *sqlparser.DDL:
+				if s.Action == sqlparser.CreateStr {
+					if err := app.create(s); err != nil {
+						return err
+					}
+				} else {
+					vlog("Ignoring %q", s)
+				}
+			default:
+				vlog("Ignoring %q", s)
+			}
+		}
+	}
+
+	return nil
+}
+
+func (app *mysqldump2csv) Close() error {
+	if len(app.tables) == 0 {
+		log.Printf("Found no tables.")
+		return nil
+	}
+
+	for _, t := range app.tables {
+		if err := t.Close(); err != nil {
+			return fmt.Errorf("Failed to close csv files: %s", err)
+		}
+
+		log.Printf("Wrote %d rows for table %q", t.count, t.name)
+	}
+	return nil
 }
 
 func main() {
 	parseArgs()
 
-	filename := os.Args[1]
-
 	var in io.Reader
-
-	if filename == "-" {
+	if input == "-" {
 		in = os.Stdin
 	} else {
 		var err error
 
-		in, err = os.Open(filename)
+		in, err = os.Open(input)
 		if err != nil {
 			log.Fatal(err)
 		}
 
-		if strings.HasSuffix(filename, ".gz") {
+		if strings.HasSuffix(input, ".gz") {
 			if in, err = gzip.NewReader(in); err != nil {
 				log.Fatal(err)
 			}
 		}
 	}
 
-	tokens := &sqlparser.Tokenizer{InStream: bufio.NewReader(in)}
-	w := csv.NewWriter(os.Stdout)
-	w.Comma = comma
-
-	if err := process(w, tokens); err != nil {
+	app := NewMysqldump2csv()
+	if err := app.Process(in); err != nil {
 		log.Fatal(err)
 	}
-
-	w.Flush()
-	if err := w.Error(); err != nil {
+	if err := app.Close(); err != nil {
 		log.Fatal(err)
 	}
 }
