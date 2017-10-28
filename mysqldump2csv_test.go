@@ -30,8 +30,6 @@ func TestMain(m *testing.M) {
 }
 
 func processFile(t *testing.T, app *mySQLDump2Csv, input string) {
-	t.Helper()
-
 	f, err := os.Open(input)
 	if err != nil {
 		t.Fatalf("Failed to open input testdata: %s", err)
