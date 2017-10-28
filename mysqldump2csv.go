@@ -11,9 +11,12 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
-//
+
 // mysqldump2csv takes a MySQL dump, and extracts the fields echoing them as a CSV.
-// by Andrew Brampton (bramp.net)
+//
+// by Andrew Brampton (https://bramp.net)
+//
+// See https://bramp.net/mysqldump2csv for instructions.
 package main // import "bramp.net/mysqldump2csv"
 
 import (
