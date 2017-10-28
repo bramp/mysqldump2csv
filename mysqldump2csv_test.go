@@ -114,15 +114,14 @@ func TestMySQLDump2CsvNotSupported(t *testing.T) {
 	app := newMySQLDump2Csv()
 	app.out = &b
 
-	input := "testdata/not_supported.sql"
+	filename := "testdata/not_supported.sql"
 
-	f, err := os.Open(input)
+	f, err := os.Open(filename)
 	if err != nil {
 		t.Fatalf("Failed to open input testdata: %s", err)
 	}
 
-	if err := app.Process(f); err == nil {
-		t.Errorf("[%q] app.Process(...) err = nil, want 'not currently supported'", input, err)
+	if err := app.Process(f); err == nil || !strings.Contains(err.Error(), "not currently supported") {
+		t.Errorf("[%q] app.Process(...) err = %v, want 'not currently supported'", filename, err)
 	}
-
 }
