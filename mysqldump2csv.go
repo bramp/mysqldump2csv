@@ -14,7 +14,7 @@
 //
 // mysqldump2csv takes a MySQL dump, and extracts the fields echoing them as a CSV.
 // by Andrew Brampton (bramp.net)
-package main
+package main // import "bramp.net/mysqldump2csv"
 
 import (
 	"bufio"
