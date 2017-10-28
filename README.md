@@ -1,4 +1,4 @@
-# mysqldump2csv
+# mysqldump2csv [![Build Status](https://img.shields.io/travis/bramp/mysqldump2csv.svg)](https://travis-ci.org/bramp/mysqldump2csv) [![Coverage](https://img.shields.io/coveralls/bramp/mysqldump2csv.svg)](https://coveralls.io/github/bramp/mysqldump2csv) [![Report card](https://goreportcard.com/badge/bramp.net/mysqldump2csv)](https://goreportcard.com/report/bramp.net/mysqldump2csv) [![GoDoc](https://godoc.org/bramp.net/mysqldump2csv?status.svg)](https://godoc.org/bramp.net/mysqldump2csv)
 by Andrew Brampton ([bramp.net](https://bramp.net))
 
 Convert a MySQL SQL dumps to a CSV file. Originally developed to convert [Wikipedia database backups](https://dumps.wikimedia.org/backup-index.html) into something more parsable. Uses a SQL parser to correctly parse the file, instead of hacky regexes (or likewise) that are unreliable.
@@ -18,7 +18,7 @@ Usage:
   mysqldump2csv [flags] <dump.sql>
 
 Flags:
-  -delimiter string		    field delimiter (default: ",")
+  -delimiter string         field delimiter (default: ",")
   -newline string           line terminator (default: "\n")
 
   -header                   Print the CSV header (default: true)
